@@ -69,6 +69,17 @@ function filterRevisions(response) {
     const result = response.responses[0].message.result;
     
     if (result.revisions && Array.isArray(result.revisions)) {
+      // Find the last published revision (regardless of date) - sorted by modification timestamp (when published)
+      const allPublishedRevisions = result.revisions
+        .filter(revision => revision.published === true)
+        .sort((a, b) => {
+          const dateA = new Date(a.modificationTimestamp || 0);
+          const dateB = new Date(b.modificationTimestamp || 0);
+          return dateB - dateA; // Latest first
+        });
+      
+      const lastPublishedRevision = allPublishedRevisions.length > 0 ? allPublishedRevisions[0] : null;
+      
       const filteredRevisions = result.revisions.filter(revision => {
         // Filter by published = true
         const isPublished = revision.published === true;
@@ -92,6 +103,7 @@ function filterRevisions(response) {
       result.originalCount = originalCount;
       result.filteredCount = firstResult.length;
       result.selectedFilename = firstResult.length > 0 ? firstResult[0].filename : null;
+      result.lastPublishedRevision = lastPublishedRevision;
     }
   }
   
@@ -942,8 +954,13 @@ function generateHtmlReport(results, outputPath = 'report.html') {
             margin-top: 5px;
         }
         .table-container {
-            padding: 30px;
+            margin: 30px;
             overflow-x: auto;
+            max-height: 70vh;
+            overflow-y: auto;
+            border: 1px solid #dee2e6;
+            border-radius: 8px;
+            background: white;
         }
         table {
             width: 100%;
@@ -960,6 +977,31 @@ function generateHtmlReport(results, outputPath = 'report.html') {
             position: sticky;
             top: 0;
             z-index: 10;
+            cursor: pointer;
+            user-select: none;
+            transition: background-color 0.2s ease;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        th:hover {
+            background-color: #e9ecef;
+        }
+        th.sortable::after {
+            content: ' ↕️';
+            font-size: 12px;
+            opacity: 0.5;
+            margin-left: 5px;
+        }
+        th.sort-asc::after {
+            content: ' ↑';
+            font-size: 12px;
+            opacity: 1;
+            margin-left: 5px;
+        }
+        th.sort-desc::after {
+            content: ' ↓';
+            font-size: 12px;
+            opacity: 1;
+            margin-left: 5px;
         }
         td {
             padding: 12px;
@@ -1063,6 +1105,16 @@ function generateHtmlReport(results, outputPath = 'report.html') {
                 </select>
             </div>
             <div class="filter-group">
+                <label for="dateOperator">Published Date:</label>
+                <select id="dateOperator" style="width: 80px;">
+                    <option value="">All</option>
+                    <option value="gt">After</option>
+                    <option value="lt">Before</option>
+                    <option value="eq">On</option>
+                </select>
+                <input type="date" id="dateFilter" placeholder="DD/MM/YYYY" style="margin-left: 5px;" />
+            </div>
+            <div class="filter-group">
                 <button onclick="clearFilters()" style="padding: 8px 16px; background: #6c757d; color: white; border: none; border-radius: 4px; cursor: pointer;">Clear Filters</button>
             </div>
         </div>
@@ -1094,13 +1146,14 @@ function generateHtmlReport(results, outputPath = 'report.html') {
             <table id="resultsTable">
                 <thead>
                     <tr>
-                        <th>MSID</th>
-                        <th>Site ID</th>
-                        <th>Modification Date</th>
-                        <th>Revision URL</th>
-                        <th>Page Data URL</th>
-                        <th>Page URI SEO</th>
-                        <th>Page Status</th>
+                        <th class="sortable" data-column="0" data-type="string">MSID</th>
+                        <th class="sortable" data-column="1" data-type="string">Site ID</th>
+                        <th class="sortable" data-column="2" data-type="date">Modification Date</th>
+                        <th class="sortable" data-column="3" data-type="date">Published Date</th>
+                        <th class="sortable" data-column="4" data-type="string">Revision URL</th>
+                        <th class="sortable" data-column="5" data-type="string">Page Data URL</th>
+                        <th class="sortable" data-column="6" data-type="string">Page URI SEO</th>
+                        <th class="sortable" data-column="7" data-type="string">Page Status</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -1115,6 +1168,16 @@ function generateHtmlReport(results, outputPath = 'report.html') {
                         const modificationTimestamp = result.data?.responses?.[0]?.message?.result?.revisions?.[0]?.modificationTimestamp;
                         const modificationDate = modificationTimestamp 
                             ? new Date(modificationTimestamp).toLocaleDateString('en-GB', {
+                                year: 'numeric',
+                                month: '2-digit',
+                                day: '2-digit'
+                              })
+                            : 'N/A';
+                        
+                        // Get last published revision date (using modification timestamp as publish date)
+                        const lastPublishedRevision = result.data?.responses?.[0]?.message?.result?.lastPublishedRevision;
+                        const publishedDate = lastPublishedRevision?.modificationTimestamp 
+                            ? new Date(lastPublishedRevision.modificationTimestamp).toLocaleDateString('en-GB', {
                                 year: 'numeric',
                                 month: '2-digit',
                                 day: '2-digit'
@@ -1157,6 +1220,7 @@ function generateHtmlReport(results, outputPath = 'report.html') {
                             <td><div class="msid-cell">${result.msid}</div></td>
                             <td><div class="msid-cell">${siteId}</div></td>
                             <td><div class="date-cell">${modificationDate}</div></td>
+                            <td><div class="date-cell">${publishedDate}</div></td>
                             <td><div class="filename-cell">${urlCell}</div></td>
                             <td><div class="filename-cell">${pageDataCell}</div></td>
                             <td>${pageUriSEO}</td>
@@ -1176,6 +1240,8 @@ function generateHtmlReport(results, outputPath = 'report.html') {
         function filterTable() {
             const msidFilter = document.getElementById('msidFilter').value.toLowerCase();
             const hiddenFilter = document.getElementById('hiddenFilter').value;
+            const dateOperator = document.getElementById('dateOperator').value;
+            const dateFilter = document.getElementById('dateFilter').value;
             const rows = document.querySelectorAll('#resultsTable tbody tr');
             
             let visibleCount = 0;
@@ -1184,10 +1250,15 @@ function generateHtmlReport(results, outputPath = 'report.html') {
                 const msid = row.dataset.msid.toLowerCase();
                 const status = row.dataset.status;
                 
+                // Get published date from the 4th column (index 3)
+                const publishedDateCell = row.cells[3];
+                const publishedDateText = publishedDateCell ? publishedDateCell.textContent.trim() : '';
+                
                 const msidMatch = !msidFilter || msid.includes(msidFilter);
                 const statusMatch = !hiddenFilter || status === hiddenFilter;
+                const dateMatch = checkDateFilter(publishedDateText, dateOperator, dateFilter);
                 
-                if (msidMatch && statusMatch) {
+                if (msidMatch && statusMatch && dateMatch) {
                     row.style.display = '';
                     visibleCount++;
                 } else {
@@ -1197,6 +1268,36 @@ function generateHtmlReport(results, outputPath = 'report.html') {
             
             // Update stats for filtered results
             updateFilteredStats(visibleCount);
+        }
+        
+        function checkDateFilter(publishedDateText, operator, filterDate) {
+            if (!operator || !filterDate || publishedDateText === 'N/A') {
+                return true; // No filter applied or no date available
+            }
+            
+            // Parse DD/MM/YYYY format to Date object
+            const dateParts = publishedDateText.split('/');
+            if (dateParts.length !== 3) {
+                return true; // Invalid date format, don't filter
+            }
+            
+            const publishedDate = new Date(dateParts[2], dateParts[1] - 1, dateParts[0]); // year, month-1, day
+            const filterDateObj = new Date(filterDate);
+            
+            // Reset time to compare only dates
+            publishedDate.setHours(0, 0, 0, 0);
+            filterDateObj.setHours(0, 0, 0, 0);
+            
+            switch (operator) {
+                case 'gt': // After
+                    return publishedDate > filterDateObj;
+                case 'lt': // Before
+                    return publishedDate < filterDateObj;
+                case 'eq': // On
+                    return publishedDate.getTime() === filterDateObj.getTime();
+                default:
+                    return true;
+            }
         }
         
         function updateFilteredStats(visibleCount) {
@@ -1220,12 +1321,105 @@ function generateHtmlReport(results, outputPath = 'report.html') {
         function clearFilters() {
             document.getElementById('msidFilter').value = '';
             document.getElementById('hiddenFilter').value = '';
+            document.getElementById('dateOperator').value = '';
+            document.getElementById('dateFilter').value = '';
             filterTable();
         }
+        
+        // Sorting functionality
+        let currentSort = { column: -1, direction: 'asc' };
+        
+        function sortTable(columnIndex, dataType) {
+            const table = document.getElementById('resultsTable');
+            const tbody = table.querySelector('tbody');
+            const rows = Array.from(tbody.querySelectorAll('tr'));
+            
+            // Determine sort direction
+            if (currentSort.column === columnIndex) {
+                currentSort.direction = currentSort.direction === 'asc' ? 'desc' : 'asc';
+            } else {
+                currentSort.direction = 'asc';
+            }
+            currentSort.column = columnIndex;
+            
+            // Update header classes
+            const headers = table.querySelectorAll('th.sortable');
+            headers.forEach((header, index) => {
+                header.classList.remove('sort-asc', 'sort-desc');
+                if (index === columnIndex) {
+                    header.classList.add(currentSort.direction === 'asc' ? 'sort-asc' : 'sort-desc');
+                }
+            });
+            
+            // Sort rows
+            rows.sort((a, b) => {
+                let aValue = getCellValue(a, columnIndex, dataType);
+                let bValue = getCellValue(b, columnIndex, dataType);
+                
+                if (dataType === 'date') {
+                    aValue = parseDate(aValue);
+                    bValue = parseDate(bValue);
+                } else if (dataType === 'string') {
+                    aValue = aValue.toLowerCase();
+                    bValue = bValue.toLowerCase();
+                }
+                
+                let comparison = 0;
+                if (aValue > bValue) comparison = 1;
+                if (aValue < bValue) comparison = -1;
+                
+                return currentSort.direction === 'asc' ? comparison : -comparison;
+            });
+            
+            // Re-append sorted rows
+            rows.forEach(row => tbody.appendChild(row));
+        }
+        
+        function getCellValue(row, columnIndex, dataType) {
+            const cell = row.cells[columnIndex];
+            if (!cell) return '';
+            
+            // For cells with links, get the text content
+            const link = cell.querySelector('a');
+            if (link) {
+                return link.textContent.trim();
+            }
+            
+            // For status badges, get the text content
+            const badge = cell.querySelector('.status-badge');
+            if (badge) {
+                return badge.textContent.trim();
+            }
+            
+            return cell.textContent.trim();
+        }
+        
+        function parseDate(dateStr) {
+            if (dateStr === 'N/A' || !dateStr) return new Date(0);
+            
+            // Handle DD/MM/YYYY format
+            const parts = dateStr.split('/');
+            if (parts.length === 3) {
+                return new Date(parts[2], parts[1] - 1, parts[0]); // year, month-1, day
+            }
+            
+            return new Date(dateStr);
+        }
+        
+        // Add click listeners to sortable headers
+        document.querySelectorAll('th.sortable').forEach((header, index) => {
+            header.addEventListener('click', () => {
+                const columnIndex = parseInt(header.dataset.column);
+                const dataType = header.dataset.type;
+                sortTable(columnIndex, dataType);
+            });
+        });
         
         // Add event listeners
         document.getElementById('msidFilter').addEventListener('input', filterTable);
         document.getElementById('hiddenFilter').addEventListener('change', filterTable);
+        document.getElementById('dateOperator').addEventListener('change', filterTable);
+        document.getElementById('dateFilter').addEventListener('change', filterTable);
         
         // Initialize
         filterTable();

@@ -3,6 +3,52 @@
 const axios = require('axios');
 const { Command } = require('commander');
 const fs = require('fs');
+
+/**
+ * Helper function to retry HTTP requests on 5xx errors
+ * @param {Function} requestFn - Function that returns a Promise for the HTTP request
+ * @param {number} maxRetries - Maximum number of retries (default: 3)
+ * @param {number} delay - Delay between retries in milliseconds (default: 1000)
+ * @returns {Promise} - The result of the HTTP request
+ */
+async function retryOnServerError(requestFn, maxRetries = 3, delay = 1000) {
+  let lastError;
+  
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await requestFn();
+    } catch (error) {
+      lastError = error;
+      
+      // Check if it's a 5xx server error or network error
+      const isServerError = error.response && 
+                           error.response.status >= 500 && 
+                           error.response.status < 600;
+      
+      const isNetworkError = !error.response && (
+        error.code === 'ECONNRESET' ||
+        error.code === 'ECONNREFUSED' ||
+        error.code === 'ETIMEDOUT' ||
+        error.code === 'ENOTFOUND' ||
+        error.code === 'EAI_AGAIN' ||
+        error.message.includes('timeout') ||
+        error.message.includes('ECONNRESET')
+      );
+      
+      if ((isServerError || isNetworkError) && attempt < maxRetries) {
+        const errorType = isServerError ? `Server error (${error.response.status})` : `Network error (${error.code || error.message})`;
+        console.log(`⚠️ ${errorType}, retrying in ${delay}ms... (attempt ${attempt}/${maxRetries})`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        continue;
+      }
+      
+      // If not a server error or max retries reached, throw the error
+      throw error;
+    }
+  }
+  
+  throw lastError;
+}
 const path = require('path');
 
 const program = new Command();
@@ -69,7 +115,9 @@ async function fetchRevisionData(filename, debug = false) {
   }
   
   try {
-    const response = await axios.get(url);
+    const response = await retryOnServerError(async () => {
+      return await axios.get(url);
+    });
     
     if (debug) {
       console.log('=== DEBUG: REVISION DATA RESPONSE ===');
@@ -99,6 +147,10 @@ async function fetchRevisionData(filename, debug = false) {
         else if (obj.pageUriSEO.includes('online-ordering')) {
           foundPage = { object: obj, path: path, exactMatch: false, searchType: 'contains-online-ordering' };
         }
+        // Check for contains "order" (fallback)
+        else if (obj.pageUriSEO.includes('order')) {
+          foundPage = { object: obj, path: path, exactMatch: false, searchType: 'contains-order' };
+        }
 
         // If we found a potential page, validate it with restaurant app
         if (foundPage && foundPage.object.jsonFileName) {
@@ -112,7 +164,9 @@ async function fetchRevisionData(filename, debug = false) {
               console.log(`🔍 Checking page data: ${pageUrl}`);
             }
             
-            const pageResponse = await axios.get(pageUrl);
+            const pageResponse = await retryOnServerError(async () => {
+              return await axios.get(pageUrl);
+            });
             
             // Search for appDefinitionId = "13e8d036-5516-6104-b456-c8466db39542"
             function findRestaurantOrderingApp(obj) {
@@ -244,7 +298,9 @@ async function fetchRevisionData(filename, debug = false) {
             console.log(`🔍 Checking page data: ${pageUrl}`);
           }
           
-          const pageResponse = await axios.get(pageUrl);
+          const pageResponse = await retryOnServerError(async () => {
+            return await axios.get(pageUrl);
+          });
           
           // Search for appDefinitionId = "13e8d036-5516-6104-b456-c8466db39542"
           function findRestaurantOrderingApp(obj) {
@@ -313,7 +369,9 @@ async function fetchRevisionData(filename, debug = false) {
 
         try {
           const pageUrl = `https://editor.parastorage.com/sites/${obj.jsonFileName}.z?v=3`;
-          const pageResponse = await axios.get(pageUrl);
+          const pageResponse = await retryOnServerError(async () => {
+            return await axios.get(pageUrl);
+          });
 
           // Search for appDefinitionId = "13e8d036-5516-6104-b456-c8466db39542"
           function findRestaurantOrderingApp(obj) {
@@ -422,11 +480,9 @@ async function fetchRevisionData(filename, debug = false) {
       };
     }
 
-
-
-    // If no "online-ordering" page found, search for any page with restaurant app
+    // If no "online-ordering" or "order" page found, search for any page with restaurant app
     if (debug) {
-      console.log('🔍 No "online-ordering" page found, searching for any page with restaurant app...');
+      console.log('🔍 No "online-ordering" or "order" page found, searching for any page with restaurant app...');
     }
     
     let restaurantAppPage = await searchForRestaurantApp(data);
@@ -515,7 +571,9 @@ async function getAuthHeader(msid, debug = false) {
   logRequest('GET', url, headers, null, debug);
 
   try {
-    const response = await axios.get(url, { headers });
+    const response = await retryOnServerError(async () => {
+      return await axios.get(url, { headers });
+    });
     
     if (debug) {
       console.log('=== DEBUG: AUTH RESPONSE ===');
@@ -580,7 +638,9 @@ async function getSiteInstanceId(msid, authToken, debug = false) {
   logRequest('POST', url, headers, data, debug);
 
   try {
-    const response = await axios.post(url, data, { headers });
+    const response = await retryOnServerError(async () => {
+      return await axios.post(url, data, { headers });
+    });
     
     if (debug) {
       console.log('=== DEBUG: RELOOSE RESPONSE ===');
@@ -643,7 +703,7 @@ async function getSiteRevisions(instanceId, authToken, debug = false) {
   const data = {
     "data": [{
       "siteId": instanceId,
-      "limit": 50,
+      "limit": 100,
       "offset": 0
     }],
     "metadata": [{
@@ -656,7 +716,9 @@ async function getSiteRevisions(instanceId, authToken, debug = false) {
   logRequest('POST', url, headers, data, debug);
 
   try {
-    const response = await axios.post(url, data, { headers });
+    const response = await retryOnServerError(async () => {
+      return await axios.post(url, data, { headers });
+    });
     
     if (debug) {
       console.log('=== DEBUG: REVISIONS RESPONSE ===');
@@ -752,12 +814,24 @@ async function processSingleMsid(msid, debug = false) {
       if (revisionAnalysis.found) {
         console.log(`🎯 Online ordering page found!`);
         console.log(`   - pageUriSEO: "${revisionAnalysis.pageUriSEO}"`);
-        console.log(`   - Exact match: ${revisionAnalysis.exactMatch ? 'Yes' : 'No (contains "online-ordering")'}`);
+        
+        let matchDescription = 'No';
+        if (revisionAnalysis.searchType === 'exact-online-ordering-validated') {
+          matchDescription = 'Yes (exact "online-ordering")';
+        } else if (revisionAnalysis.searchType === 'contains-online-ordering-validated') {
+          matchDescription = 'No (contains "online-ordering")';
+        } else if (revisionAnalysis.searchType === 'contains-order-validated') {
+          matchDescription = 'No (contains "order")';
+        } else if (revisionAnalysis.searchType === 'restaurant-app-fallback') {
+          matchDescription = 'No (restaurant app fallback)';
+        }
+        
+        console.log(`   - Exact match: ${matchDescription}`);
         console.log(`   - Hidden: ${revisionAnalysis.hidden ? '🔒 YES' : '👁️ NO'}`);
         console.log(`   - Path: ${revisionAnalysis.path}`);
       } else {
         console.log('❌ No online ordering page found');
-        console.log('   No object with pageUriSEO containing "online-ordering" was found');
+        console.log('   No object with pageUriSEO containing "online-ordering" or "order" was found');
       }
       
       return { 
@@ -931,6 +1005,12 @@ function generateHtmlReport(results, outputPath = 'report.html') {
             max-width: 200px;
             word-break: break-all;
         }
+        .date-cell {
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-size: 0.85em;
+            color: #495057;
+            white-space: nowrap;
+        }
         .revision-link {
             color: #1976d2;
             text-decoration: none;
@@ -1016,7 +1096,9 @@ function generateHtmlReport(results, outputPath = 'report.html') {
                     <tr>
                         <th>MSID</th>
                         <th>Site ID</th>
+                        <th>Modification Date</th>
                         <th>Revision URL</th>
+                        <th>Page Data URL</th>
                         <th>Page URI SEO</th>
                         <th>Page Status</th>
                     </tr>
@@ -1027,14 +1109,26 @@ function generateHtmlReport(results, outputPath = 'report.html') {
                         const filename = result.filename || 'N/A';
                         const revisionUrl = filename !== 'N/A' ? `https://editor.wixstatic.com/revs/${filename}.z` : 'N/A';
                         const pageUriSEO = result.onlineOrderingAnalysis?.pageUriSEO || 'N/A';
+                        const jsonFileName = result.onlineOrderingAnalysis?.jsonFileName || 'N/A';
+                        
+                        // Get modification timestamp and format it
+                        const modificationTimestamp = result.data?.responses?.[0]?.message?.result?.revisions?.[0]?.modificationTimestamp;
+                        const modificationDate = modificationTimestamp 
+                            ? new Date(modificationTimestamp).toLocaleDateString('en-GB', {
+                                year: 'numeric',
+                                month: '2-digit',
+                                day: '2-digit'
+                              })
+                            : 'N/A';
                         
                         let statusClass, statusText;
                         if (!result.success) {
                             statusClass = 'status-error';
                             statusText = 'Error';
                         } else if (!result.onlineOrderingAnalysis) {
-                            statusClass = 'status-error';
-                            statusText = 'No Analysis';
+                            // If processing was successful but no analysis was performed (e.g., no revision found)
+                            statusClass = 'status-not-found';
+                            statusText = 'Not Found';
                         } else if (!result.onlineOrderingAnalysis.found) {
                             statusClass = 'status-not-found';
                             statusText = 'Not Found';
@@ -1050,11 +1144,21 @@ function generateHtmlReport(results, outputPath = 'report.html') {
                             ? `<a href="${revisionUrl}" target="_blank" rel="noopener noreferrer" class="revision-link">${filename}</a>`
                             : 'N/A';
                         
+                        const pageDataUrl = jsonFileName !== 'N/A' 
+                            ? `https://editor.parastorage.com/sites/${jsonFileName}.z?v=3`
+                            : 'N/A';
+                        
+                        const pageDataCell = pageDataUrl !== 'N/A' 
+                            ? `<a href="${pageDataUrl}" target="_blank" rel="noopener noreferrer" class="revision-link">${jsonFileName}</a>`
+                            : 'N/A';
+                        
                         return `
                         <tr data-msid="${result.msid}" data-status="${statusText.toLowerCase().replace(' ', '-')}">
                             <td><div class="msid-cell">${result.msid}</div></td>
                             <td><div class="msid-cell">${siteId}</div></td>
+                            <td><div class="date-cell">${modificationDate}</div></td>
                             <td><div class="filename-cell">${urlCell}</div></td>
+                            <td><div class="filename-cell">${pageDataCell}</div></td>
                             <td>${pageUriSEO}</td>
                             <td><span class="status-badge ${statusClass}">${statusText}</span></td>
                         </tr>`;
@@ -1146,29 +1250,34 @@ async function processMultipleMsids(filePath, debug = false) {
   }
   
   console.log(`Found ${msids.length} MSIDs to process from file: ${filePath}`);
+  console.log('🚀 Processing all MSIDs in parallel...\n');
   
-  const results = [];
-  let successCount = 0;
-  let errorCount = 0;
+  // Process all MSIDs in parallel
+  const processingPromises = msids.map((msid, index) => {
+    console.log(`[${index + 1}/${msids.length}] Started processing: ${msid}`);
+    return processSingleMsid(msid, debug);
+  });
   
-  for (let i = 0; i < msids.length; i++) {
-    const msid = msids[i];
-    console.log(`\n[${i + 1}/${msids.length}] Processing: ${msid}`);
-    
-    const result = await processSingleMsid(msid, debug);
-    results.push(result);
-    
-    if (result.success) {
-      successCount++;
+  // Wait for all MSIDs to complete
+  const results = await Promise.allSettled(processingPromises);
+  
+  // Convert Promise.allSettled results to our expected format
+  const processedResults = results.map((result, index) => {
+    if (result.status === 'fulfilled') {
+      return result.value;
     } else {
-      errorCount++;
+      // This should rarely happen since processSingleMsid catches errors
+      return { 
+        msid: msids[index], 
+        success: false, 
+        error: result.reason?.message || 'Unknown error during processing' 
+      };
     }
-    
-    // Add a small delay between requests to be respectful to the API
-    if (i < msids.length - 1) {
-      await new Promise(resolve => setTimeout(resolve, 1000));
-    }
-  }
+  });
+  
+  // Calculate summary statistics
+  const successCount = processedResults.filter(r => r.success).length;
+  const errorCount = processedResults.filter(r => !r.success).length;
   
   // Summary
   console.log(`\n${'='.repeat(60)}`);
@@ -1180,12 +1289,12 @@ async function processMultipleMsids(filePath, debug = false) {
   
   if (errorCount > 0) {
     console.log('\nFailed MSIDs:');
-    results
+    processedResults
       .filter(r => !r.success)
       .forEach(r => console.log(`  - ${r.msid}: ${r.error}`));
   }
   
-  return results;
+  return processedResults;
 }
 
 /**

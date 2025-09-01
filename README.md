@@ -129,7 +129,7 @@ When using the `--report` flag, the tool generates an interactive HTML report wi
 ### Report Columns
 - **MSID**: The Meta Site ID being analyzed
 - **Site ID**: The HtmlWeb instance ID used for the site
-- **Filename**: The revision filename that was analyzed
+- **Revision URL**: Clickable link to the revision file (e.g., https://editor.wixstatic.com/revs/filename.z)
 - **Page URI SEO**: The SEO-friendly URL of the online ordering page (if found)
 - **Page Status**: Visual indicator showing if the page is Visible, Hidden, Not Found, or Error
 

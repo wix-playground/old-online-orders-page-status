@@ -80,32 +80,117 @@ async function fetchRevisionData(filename, debug = false) {
     
     // Search for online-ordering page
     const data = response.data;
-    let onlineOrderingPage = null;
     
-    // Function to recursively search through the data structure
-    function searchForOnlineOrdering(obj, path = '') {
+    // Function to recursively search through the data structure and validate pages
+    async function searchForOnlineOrdering(obj, path = '') {
       if (typeof obj !== 'object' || obj === null) {
         return null;
       }
       
-      // Check if this object has pageUriSEO
+            // Check if this object has pageUriSEO
       if (obj.pageUriSEO) {
+        let foundPage = null;
+        
+        // Check for exact match "online-ordering"
         if (obj.pageUriSEO === 'online-ordering') {
-          return { object: obj, path: path, exactMatch: true };
-        } else if (obj.pageUriSEO.includes('online-ordering')) {
-          return { object: obj, path: path, exactMatch: false };
+          foundPage = { object: obj, path: path, exactMatch: true, searchType: 'exact-online-ordering' };
+        }
+        // Check for contains "online-ordering"
+        else if (obj.pageUriSEO.includes('online-ordering')) {
+          foundPage = { object: obj, path: path, exactMatch: false, searchType: 'contains-online-ordering' };
+        }
+
+        // If we found a potential page, validate it with restaurant app
+        if (foundPage && foundPage.object.jsonFileName) {
+          if (debug) {
+            console.log(`🔍 Found ${foundPage.searchType} page, validating with restaurant app...`);
+          }
+          
+          try {
+            const pageUrl = `https://editor.parastorage.com/sites/${foundPage.object.jsonFileName}.z?v=3`;
+            if (debug) {
+              console.log(`🔍 Checking page data: ${pageUrl}`);
+            }
+            
+            const pageResponse = await axios.get(pageUrl);
+            
+            // Search for appDefinitionId = "13e8d036-5516-6104-b456-c8466db39542"
+            function findRestaurantOrderingApp(obj) {
+              if (typeof obj !== 'object' || obj === null) {
+                return false;
+              }
+
+              if (obj.appDefinitionId === '13e8d036-5516-6104-b456-c8466db39542') {
+                return true;
+              }
+
+              if (Array.isArray(obj)) {
+                for (const item of obj) {
+                  if (findRestaurantOrderingApp(item)) {
+                    return true;
+                  }
+                }
+              } else {
+                for (const value of Object.values(obj)) {
+                  if (findRestaurantOrderingApp(value)) {
+                    return true;
+                  }
+                }
+              }
+
+              return false;
+            }
+
+            if (findRestaurantOrderingApp(pageResponse.data)) {
+              if (debug) {
+                console.log(`✅ Restaurant ordering app found in page: ${foundPage.object.pageUriSEO}`);
+              }
+              foundPage.searchType += '-validated';
+              return foundPage;
+            } else {
+              if (debug) {
+                console.log(`❌ No restaurant ordering app found in page: ${foundPage.object.pageUriSEO}`);
+              }
+              // Continue searching for other pages
+            }
+          } catch (error) {
+            if (debug) {
+              console.log(`⚠️ Error validating page ${foundPage.object.jsonFileName}: ${error.message}`);
+            }
+            // Continue searching for other pages
+          }
+        } else if (foundPage) {
+          // If no jsonFileName, we can't validate, so return the page as found but note it wasn't validated
+          if (debug) {
+            console.log(`⚠️ Found page but no jsonFileName for validation: ${foundPage.object.pageUriSEO}`);
+          }
+          foundPage.searchType += '-no-validation';
+          return foundPage;
         }
       }
       
       // Recursively search in arrays and objects
       if (Array.isArray(obj)) {
         for (let i = 0; i < obj.length; i++) {
-          const result = searchForOnlineOrdering(obj[i], `${path}[${i}]`);
+          const result = await searchForOnlineOrdering(obj[i], `${path}[${i}]`);
           if (result) return result;
         }
       } else {
         for (const [key, value] of Object.entries(obj)) {
-          const result = searchForOnlineOrdering(value, path ? `${path}.${key}` : key);
+          // Skip recursively searching into objects with excluded keywords
+          if (value && typeof value === 'object' && value.pageUriSEO) {
+            const skipKeywords = ['popup', 'cart', 'account', 'checkout'];
+            const shouldSkip = skipKeywords.some(keyword => value.pageUriSEO.includes(keyword));
+            
+            if (shouldSkip) {
+              if (debug) {
+                console.log(`⏭️ Skipping recursive search in page with pageUriSEO: ${value.pageUriSEO} (contains excluded keyword)`);
+              }
+              continue; // Skip this object but continue with other objects
+            }
+          }
+          
+          const result = await searchForOnlineOrdering(value, path ? `${path}.${key}` : key);
           if (result) return result;
         }
       }
@@ -113,18 +198,216 @@ async function fetchRevisionData(filename, debug = false) {
       return null;
     }
     
-    onlineOrderingPage = searchForOnlineOrdering(data);
+    // Enhanced search for pages containing "order" and checking for restaurant ordering app
+    async function searchForOrderPages(obj, path = '') {
+      const orderPages = [];
+      
+      function collectOrderPages(obj, path = '') {
+        if (typeof obj !== 'object' || obj === null) {
+          return;
+        }
+
+        // Check if current object has pageUriSEO containing "order" and jsonFileName
+        if (obj.pageUriSEO && obj.jsonFileName && obj.pageUriSEO.includes('order')) {
+          orderPages.push({
+            object: obj,
+            path: path,
+            pageUriSEO: obj.pageUriSEO,
+            jsonFileName: obj.jsonFileName
+          });
+        }
+
+        // Recursively search in arrays and objects
+        if (Array.isArray(obj)) {
+          for (let i = 0; i < obj.length; i++) {
+            collectOrderPages(obj[i], `${path}[${i}]`);
+          }
+        } else {
+          for (const [key, value] of Object.entries(obj)) {
+            const newPath = path ? `${path}.${key}` : key;
+            collectOrderPages(value, newPath);
+          }
+        }
+      }
+
+      collectOrderPages(obj, path);
+      
+      if (debug && orderPages.length > 0) {
+        console.log(`🔍 Found ${orderPages.length} pages containing "order": ${orderPages.map(p => p.pageUriSEO).join(', ')}`);
+      }
+
+      // Check each order page for restaurant ordering app
+      for (const orderPage of orderPages) {
+        try {
+          const pageUrl = `https://editor.parastorage.com/sites/${orderPage.jsonFileName}.z?v=3`;
+          if (debug) {
+            console.log(`🔍 Checking page data: ${pageUrl}`);
+          }
+          
+          const pageResponse = await axios.get(pageUrl);
+          
+          // Search for appDefinitionId = "13e8d036-5516-6104-b456-c8466db39542"
+          function findRestaurantOrderingApp(obj) {
+            if (typeof obj !== 'object' || obj === null) {
+              return false;
+            }
+
+            if (obj.appDefinitionId === '13e8d036-5516-6104-b456-c8466db39542') {
+              return true;
+            }
+
+            if (Array.isArray(obj)) {
+              for (const item of obj) {
+                if (findRestaurantOrderingApp(item)) {
+                  return true;
+                }
+              }
+            } else {
+              for (const value of Object.values(obj)) {
+                if (findRestaurantOrderingApp(value)) {
+                  return true;
+                }
+              }
+            }
+
+            return false;
+          }
+
+          if (findRestaurantOrderingApp(pageResponse.data)) {
+            if (debug) {
+              console.log(`✅ Found restaurant ordering app in page: ${orderPage.pageUriSEO}`);
+            }
+            return {
+              object: orderPage.object,
+              path: orderPage.path,
+              exactMatch: false,
+              searchType: 'order-with-app',
+              pageUriSEO: orderPage.pageUriSEO,
+              jsonFileName: orderPage.jsonFileName
+            };
+          } else if (debug) {
+            console.log(`❌ No restaurant ordering app found in page: ${orderPage.pageUriSEO}`);
+          }
+        } catch (error) {
+          if (debug) {
+            console.log(`⚠️ Error checking page ${orderPage.jsonFileName}: ${error.message}`);
+          }
+          // Continue to next page
+        }
+      }
+
+      return null;
+    }
+
+    // Function to search for any page with restaurant app (fallback)
+    async function searchForRestaurantApp(obj, path = '') {
+      if (typeof obj !== 'object' || obj === null) {
+        return null;
+      }
+
+      // Check if this object has jsonFileName (indicating it's a page)
+      if (obj.jsonFileName) {
+        if (debug) {
+          console.log(`🔍 Checking page for restaurant app: ${obj.pageUriSEO || 'unknown'} (${obj.jsonFileName})`);
+        }
+
+        try {
+          const pageUrl = `https://editor.parastorage.com/sites/${obj.jsonFileName}.z?v=3`;
+          const pageResponse = await axios.get(pageUrl);
+
+          // Search for appDefinitionId = "13e8d036-5516-6104-b456-c8466db39542"
+          function findRestaurantOrderingApp(obj) {
+            if (typeof obj !== 'object' || obj === null) {
+              return false;
+            }
+
+            if (obj.appDefinitionId === '13e8d036-5516-6104-b456-c8466db39542') {
+              return true;
+            }
+
+            if (Array.isArray(obj)) {
+              for (const item of obj) {
+                if (findRestaurantOrderingApp(item)) {
+                  return true;
+                }
+              }
+            } else {
+              for (const value of Object.values(obj)) {
+                if (findRestaurantOrderingApp(value)) {
+                  return true;
+                }
+              }
+            }
+
+            return false;
+          }
+
+          if (findRestaurantOrderingApp(pageResponse.data)) {
+            if (debug) {
+              console.log(`✅ Restaurant ordering app found in page: ${obj.pageUriSEO || 'unknown'}`);
+            }
+            return { 
+              object: obj, 
+              path: path, 
+              exactMatch: false, 
+              searchType: 'restaurant-app-fallback' 
+            };
+          } else {
+            if (debug) {
+              console.log(`❌ No restaurant ordering app found in page: ${obj.pageUriSEO || 'unknown'}`);
+            }
+          }
+        } catch (error) {
+          if (debug) {
+            console.log(`⚠️ Error checking page ${obj.jsonFileName}: ${error.message}`);
+          }
+        }
+      }
+
+      // Recursively search in arrays and objects
+      if (Array.isArray(obj)) {
+        for (let i = 0; i < obj.length; i++) {
+          const result = await searchForRestaurantApp(obj[i], `${path}[${i}]`);
+          if (result) return result;
+        }
+      } else {
+        for (const [key, value] of Object.entries(obj)) {
+          // Skip recursively searching into objects with excluded keywords
+          if (value && typeof value === 'object' && value.pageUriSEO) {
+            const skipKeywords = ['popup', 'cart', 'account', 'checkout'];
+            const shouldSkip = skipKeywords.some(keyword => value.pageUriSEO.includes(keyword));
+            
+            if (shouldSkip) {
+              if (debug) {
+                console.log(`⏭️ Skipping recursive search in page with pageUriSEO: ${value.pageUriSEO} (contains excluded keyword)`);
+              }
+              continue; // Skip this object but continue with other objects
+            }
+          }
+          
+          const result = await searchForRestaurantApp(value, path ? `${path}.${key}` : key);
+          if (result) return result;
+        }
+      }
+
+      return null;
+    }
+    
+    // Search for "online-ordering" pages (with built-in validation)
+    let onlineOrderingPage = await searchForOnlineOrdering(data);
     
     if (onlineOrderingPage) {
       const isHidden = onlineOrderingPage.object.hidden === true;
       
       if (debug) {
-        console.log('=== DEBUG: ONLINE ORDERING PAGE FOUND ===');
+        console.log('=== DEBUG: PAGE WITH RESTAURANT APP FOUND ===');
         console.log('Path:', onlineOrderingPage.path);
-        console.log('Exact match:', onlineOrderingPage.exactMatch);
         console.log('pageUriSEO:', onlineOrderingPage.object.pageUriSEO);
-        console.log('hidden:', onlineOrderingPage.object.hidden);
-        console.log('==========================================\n');
+        console.log('hidden:', isHidden);
+        console.log('jsonFileName:', onlineOrderingPage.object.jsonFileName || 'N/A');
+        console.log('Search type:', onlineOrderingPage.searchType);
+        console.log('Exact match:', onlineOrderingPage.exactMatch);
+        console.log('==================================================\n');
       }
       
       return {
@@ -133,24 +416,61 @@ async function fetchRevisionData(filename, debug = false) {
         pageUriSEO: onlineOrderingPage.object.pageUriSEO,
         hidden: isHidden,
         path: onlineOrderingPage.path,
-        object: onlineOrderingPage.object
-      };
-    } else {
-      if (debug) {
-        console.log('=== DEBUG: ONLINE ORDERING PAGE NOT FOUND ===');
-        console.log('No object with pageUriSEO containing "online-ordering" was found');
-        console.log('==============================================\n');
-      }
-      
-      return {
-        found: false,
-        exactMatch: false,
-        pageUriSEO: null,
-        hidden: null,
-        path: null,
-        object: null
+        object: onlineOrderingPage.object,
+        searchType: onlineOrderingPage.searchType,
+        jsonFileName: onlineOrderingPage.object.jsonFileName
       };
     }
+
+
+
+    // If no "online-ordering" page found, search for any page with restaurant app
+    if (debug) {
+      console.log('🔍 No "online-ordering" page found, searching for any page with restaurant app...');
+    }
+    
+    let restaurantAppPage = await searchForRestaurantApp(data);
+    
+    if (restaurantAppPage) {
+      const isHidden = restaurantAppPage.object.hidden === true;
+
+      if (debug) {
+        console.log('=== DEBUG: PAGE WITH RESTAURANT APP FOUND (FALLBACK) ===');
+        console.log('Path:', restaurantAppPage.path);
+        console.log('pageUriSEO:', restaurantAppPage.object.pageUriSEO);
+        console.log('hidden:', isHidden);
+        console.log('jsonFileName:', restaurantAppPage.object.jsonFileName || 'N/A');
+        console.log('Search type:', restaurantAppPage.searchType);
+        console.log('===========================================================\n');
+      }
+
+      return {
+        found: true,
+        exactMatch: false,
+        pageUriSEO: restaurantAppPage.object.pageUriSEO,
+        hidden: isHidden,
+        path: restaurantAppPage.path,
+        object: restaurantAppPage.object,
+        searchType: restaurantAppPage.searchType,
+        jsonFileName: restaurantAppPage.object.jsonFileName
+      };
+    }
+
+    if (debug) {
+      console.log('=== DEBUG: NO ORDERING PAGE FOUND ===');
+      console.log('No page with restaurant app was found');
+      console.log('======================================\n');
+    }
+    
+    return {
+      found: false,
+      exactMatch: false,
+      pageUriSEO: null,
+      hidden: null,
+      path: null,
+      object: null,
+      searchType: 'not-found'
+    };
     
   } catch (error) {
     console.error('Error fetching revision data:', error.message);
@@ -611,6 +931,19 @@ function generateHtmlReport(results, outputPath = 'report.html') {
             max-width: 200px;
             word-break: break-all;
         }
+        .revision-link {
+            color: #1976d2;
+            text-decoration: none;
+            border-bottom: 1px dotted #1976d2;
+            transition: all 0.2s ease;
+        }
+        .revision-link:hover {
+            color: #0d47a1;
+            border-bottom: 1px solid #0d47a1;
+            background-color: rgba(25, 118, 210, 0.1);
+            padding: 2px 4px;
+            border-radius: 3px;
+        }
         .no-results {
             text-align: center;
             padding: 40px;
@@ -683,7 +1016,7 @@ function generateHtmlReport(results, outputPath = 'report.html') {
                     <tr>
                         <th>MSID</th>
                         <th>Site ID</th>
-                        <th>Filename</th>
+                        <th>Revision URL</th>
                         <th>Page URI SEO</th>
                         <th>Page Status</th>
                     </tr>
@@ -692,6 +1025,7 @@ function generateHtmlReport(results, outputPath = 'report.html') {
                     ${results.map(result => {
                         const siteId = result.data?.responses?.[0]?.message?.result?.revisions?.[0]?.siteId || 'N/A';
                         const filename = result.filename || 'N/A';
+                        const revisionUrl = filename !== 'N/A' ? `https://editor.wixstatic.com/revs/${filename}.z` : 'N/A';
                         const pageUriSEO = result.onlineOrderingAnalysis?.pageUriSEO || 'N/A';
                         
                         let statusClass, statusText;
@@ -712,11 +1046,15 @@ function generateHtmlReport(results, outputPath = 'report.html') {
                             statusText = 'Visible';
                         }
                         
+                        const urlCell = revisionUrl !== 'N/A' 
+                            ? `<a href="${revisionUrl}" target="_blank" rel="noopener noreferrer" class="revision-link">${filename}</a>`
+                            : 'N/A';
+                        
                         return `
                         <tr data-msid="${result.msid}" data-status="${statusText.toLowerCase().replace(' ', '-')}">
                             <td><div class="msid-cell">${result.msid}</div></td>
                             <td><div class="msid-cell">${siteId}</div></td>
-                            <td><div class="filename-cell">${filename}</div></td>
+                            <td><div class="filename-cell">${urlCell}</div></td>
                             <td>${pageUriSEO}</td>
                             <td><span class="status-badge ${statusClass}">${statusText}</span></td>
                         </tr>`;

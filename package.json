@@ -1,0 +1,19 @@
+{
+  "name": "restaurant-order-config-cli",
+  "version": "1.0.0",
+  "description": "CLI tool to fetch restaurant order page configuration information",
+  "main": "index.js",
+  "bin": {
+    "restaurant-config": "./index.js"
+  },
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "axios": "^1.6.0",
+    "commander": "^11.0.0"
+  },
+  "keywords": ["cli", "restaurant", "wix", "configuration"],
+  "author": "",
+  "license": "MIT"
+}

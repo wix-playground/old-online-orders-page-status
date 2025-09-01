@@ -1,0 +1,17 @@
+# Sample MSIDs file
+# This is a comment - lines starting with # are ignored
+# Empty lines are also ignored
+
+# 6759af1c-f457-4632-8b8e-674b50c7f9b8
+# 8020e0d-fc42-431e-9599-27c46eaf879a
+# c90cd53f-42fb-4143-ae98-5a1aaba6242a
+
+# Add your MSIDs here, one per line
+4c230186-b312-4523-abf0-91813348073a
+700a0d38-439d-4670-b1f5-1524c1c9ed15
+ff31638a-bf4b-40bd-b022-709f559b6364
+c8adaa9a-e17f-4b92-90de-d9d4acd20c28
+4db987cf-f187-49ba-adb2-dc99c2a5e662
+99508ea5-262a-4584-ba9a-d08f808adba6
+732a9d91-2fab-4b66-8b48-d2f27100280d
+c90cd53f-42fb-4143-ae98-5a1aaba6242a
